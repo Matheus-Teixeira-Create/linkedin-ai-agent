@@ -1,0 +1,2 @@
+# A estrutura inicial não exige dependências externas de execução.
+# Adicione um pacote somente quando uma funcionalidade implementada precisar dele.
