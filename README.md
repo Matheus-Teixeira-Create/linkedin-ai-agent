@@ -30,6 +30,9 @@ A primeira versão manterá um núcleo Python pequeno e adicionará módulos ape
 | `requirements.txt` | Dependências de execução. Ainda não há dependências externas de execução. |
 | `requirements-dev.txt` | Dependências de desenvolvimento, incluindo Pytest. |
 | `tests/test_settings.py` | Testes unitários para valores padrão, normalização, validação e proteção de segredos. |
+| `app/models/search_criteria.py` | Modelo validado e independente de persistência para os critérios de busca. |
+| `app/services/search_criteria_service.py` | Atualização, substituição e limpeza dos critérios em memória. |
+| `tests/test_search_criteria.py` | Testes do modelo e do serviço de critérios de busca. |
 | `.env.example` | Nomes das configurações locais previstas, sem credenciais. |
 
 À medida que as funcionalidades forem aprovadas, poderão ser adicionados serviços, modelos, testes, documentação e fluxos do GitHub Actions quando houver necessidade real. O desenho inicial não exige FastAPI nem banco de dados; essas escolhas poderão ser reavaliadas quando houver um caso de uso concreto.
