@@ -90,6 +90,12 @@ python -m uvicorn app.main:app --reload
 
 Linhas de usuário legadas sem e-mail e senha permanecem preservadas pela migration, mas não podem autenticar até uma futura vinculação explícita. Recuperação e verificação de e-mail não fazem parte desta etapa.
 
+## Dados pessoais por usuário
+
+Os endpoints `/me/search-criteria` e `/me/professional-profile` consultam e alteram somente os dados associados ao usuário autenticado. Ambos aceitam `GET`, `PUT`, `PATCH` e `DELETE`; operações de alteração exigem o cabeçalho CSRF. `PUT` substitui o recurso e cria quando ainda não existe; `PATCH` altera somente os campos enviados. Corpos de entrada não aceitam `user_id` nem IDs de proprietário, e as rotas não recebem IDs de outros usuários. O identificador usado pelos repositórios vem exclusivamente do principal extraído do token.
+
+Os critérios e perfis continuam associados por `user_id`, com as chaves estrangeiras e restrições de unicidade existentes. A API não altera o catálogo compartilhado de vagas. Novos dados pessoais devem seguir o mesmo padrão: obter o proprietário da identidade autenticada e delimitar toda operação ao seu identificador.
+
 ## Configuração e segurança
 
 - Nunca versione `.env`, tokens de acesso, segredos de cliente ou chaves de API.
