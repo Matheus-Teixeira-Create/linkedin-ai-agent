@@ -9,11 +9,13 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,18 +27,73 @@ def _utc_now() -> datetime:
 
 
 class UserORM(Base):
-    """Identidade mínima, sem credenciais ou autenticação nesta etapa."""
+    """Conta de usuário; campos de autenticação aceitam nulos na migração legada."""
 
     __tablename__ = "users"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    email: Mapped[str | None] = mapped_column(String(320))
+    email_normalized: Mapped[str | None] = mapped_column(String(320))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
     search_criteria: Mapped["SearchCriteriaORM | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True, uselist=False
     )
     professional_profile: Mapped["ProfessionalProfileORM | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan", passive_deletes=True, uselist=False
     )
+    auth_sessions: Mapped[list["AuthSessionORM"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+Index("uq_users_email_normalized", UserORM.email_normalized, unique=True)
+
+
+class AuthSessionORM(Base):
+    """Sessão revogável associada a um usuário autenticado."""
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (Index("ix_auth_sessions_user_id", "user_id"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    csrf_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    user: Mapped[UserORM] = relationship(back_populates="auth_sessions")
+    refresh_tokens: Mapped[list["RefreshTokenORM"]] = relationship(
+        back_populates="auth_session", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class RefreshTokenORM(Base):
+    """Histórico de hashes de refresh token para rotação e detecção de replay."""
+
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        Index("uq_refresh_tokens_token_hash", "token_hash", unique=True),
+        Index("ix_refresh_tokens_session_id", "session_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replaced_by_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("refresh_tokens.id", ondelete="SET NULL")
+    )
+
+    auth_session: Mapped[AuthSessionORM] = relationship(back_populates="refresh_tokens")
 
 
 class SearchCriteriaORM(Base):
