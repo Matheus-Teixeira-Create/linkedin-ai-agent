@@ -1,2 +1,4 @@
-# A estrutura inicial não exige dependências externas de execução.
-# Adicione um pacote somente quando uma funcionalidade implementada precisar dele.
+# Dependências de execução e operação das migrations.
+SQLAlchemy>=2.0,<3.0
+alembic>=1.13,<2.0
+psycopg[binary]>=3.2,<4.0

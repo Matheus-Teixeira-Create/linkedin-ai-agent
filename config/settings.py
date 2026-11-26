@@ -23,13 +23,14 @@ class Settings:
     linkedin_client_id: str | None = None
     linkedin_client_secret: str | None = field(default=None, repr=False)
     linkedin_redirect_uri: str | None = None
+    database_url: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         """Cria configurações a partir de um mapeamento ou de ``os.environ``.
 
-        Valores secretos não aparecem na representação do objeto, evitando
-        expor credenciais em logs ou durante a depuração.
+        Segredos e a URL do banco não aparecem na representação do objeto,
+        evitando exposição acidental em logs ou durante a depuração.
         """
         source = os.environ if environ is None else environ
 
@@ -52,4 +53,5 @@ class Settings:
             linkedin_client_id=optional_value("LINKEDIN_CLIENT_ID"),
             linkedin_client_secret=optional_value("LINKEDIN_CLIENT_SECRET"),
             linkedin_redirect_uri=optional_value("LINKEDIN_REDIRECT_URI"),
+            database_url=optional_value("DATABASE_URL"),
         )
