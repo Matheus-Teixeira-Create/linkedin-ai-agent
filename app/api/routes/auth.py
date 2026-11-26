@@ -1,6 +1,7 @@
 """Cadastro, login, renovação e encerramento de sessões."""
 
 from datetime import UTC, datetime
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -23,6 +24,7 @@ from config.settings import Settings, SettingsError
 
 
 router = APIRouter(prefix="/auth", tags=["autenticação"])
+_logger = logging.getLogger(__name__)
 
 
 def _set_auth_cookies(response: Response, credentials, settings: Settings) -> None:
@@ -72,7 +74,15 @@ def _clear_auth_cookies(response: Response, settings: Settings) -> None:
 def _enforce_rate_limit(request: Request, action: str, email: str) -> None:
     """Usa o peer da conexão; não interpreta X-Forwarded-For enviado pelo cliente."""
     client_ip = request.client.host if request.client is not None else "unknown-client"
-    retry_after = request.app.state.auth_rate_limiter.check(action, client_ip, email)
+    try:
+        retry_after = request.app.state.auth_rate_limiter.check(action, client_ip, email)
+    except Exception as error:
+        # Uma falha do armazenamento nunca libera a tentativa de autenticação.
+        _logger.error("Rate limiter indisponível (tipo=%s).", type(error).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Proteção temporariamente indisponível. Tente novamente mais tarde.",
+        ) from None
     if retry_after is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

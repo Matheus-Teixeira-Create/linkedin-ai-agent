@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -92,6 +92,30 @@ def test_missing_profile_data_is_not_evaluated_or_assumed() -> None:
     assert len(result.not_evaluable) == 4
     assert result.met == ()
     assert result.not_met == ()
+
+
+def test_datetime_is_rejected_for_as_of_instead_of_causing_date_comparison_error() -> None:
+    profile = ProfessionalProfile(
+        experience=(Experience("Exemplo Ltda.", "Desenvolvedor", date(2020, 1, 1)),)
+    )
+    vacancy = JobVacancy(
+        "Desenvolvedor",
+        requirements=(JobRequirement("experiencia", "Desenvolvedor", minimum_years=1),),
+    )
+    with pytest.raises(CompatibilityValidationError, match="as_of deve ser uma data"):
+        CompatibilityService().evaluate(profile, vacancy, as_of=datetime(2025, 1, 1, 12))
+
+
+def test_date_is_accepted_for_as_of() -> None:
+    profile = ProfessionalProfile(
+        experience=(Experience("Exemplo Ltda.", "Desenvolvedor", date(2020, 1, 1), is_current=True),)
+    )
+    vacancy = JobVacancy(
+        "Desenvolvedor",
+        requirements=(JobRequirement("experiencia", "Desenvolvedor", minimum_years=1),),
+    )
+    result = CompatibilityService().evaluate(profile, vacancy, as_of=date(2025, 1, 1))
+    assert result.score == 100
 
 
 def test_absent_skill_is_not_evaluated_even_when_other_skills_are_listed() -> None:

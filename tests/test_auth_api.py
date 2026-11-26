@@ -1,6 +1,7 @@
 """Testes HTTP de cadastro, autenticação e gerenciamento de sessões."""
 
 from fastapi.testclient import TestClient
+import secrets
 import pytest
 from sqlalchemy import select
 
@@ -17,7 +18,7 @@ def auth_client(database_engine):
     app = create_app(
         Settings(
             database_url=None,
-            jwt_secret_key="x" * 48,
+            jwt_secret_key=secrets.token_urlsafe(48),
             auth_cookie_secure=False,
             auth_cookie_samesite="lax",
         )
@@ -136,7 +137,7 @@ def test_login_sets_http_only_cookies_and_authenticated_user_response(auth_clien
 
 def test_production_cookie_configuration_sets_secure_flag(auth_client) -> None:
     auth_client.app.state.settings = Settings(
-        jwt_secret_key="x" * 48,
+        jwt_secret_key=secrets.token_urlsafe(48),
         auth_cookie_secure=True,
         auth_cookie_samesite="strict",
     )

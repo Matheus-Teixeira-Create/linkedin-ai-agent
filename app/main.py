@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import AsyncIterator
 
@@ -22,6 +23,9 @@ from app.security.rate_limiting import (
 from config.settings import Settings, SettingsError
 
 
+_logger = logging.getLogger(__name__)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -33,8 +37,17 @@ def create_app(
     app_settings.validate_environment()
     if app_settings.app_env.casefold() == "production":
         app_settings.validate_authentication()
-        if not app_settings.database_url:
-            raise SettingsError("DATABASE_URL deve ser configurada em produção.")
+    app_settings.validate_database(production=app_settings.app_env.casefold() == "production")
+    if app_settings.app_env.casefold() == "production":
+        if (
+            rate_limit_store is None
+            or isinstance(rate_limit_store, InMemoryRateLimitStore)
+            or getattr(rate_limit_store, "is_shared", False) is not True
+            or not callable(getattr(rate_limit_store, "check_and_record", None))
+        ):
+            raise SettingsError(
+                "Produção exige uma implementação compartilhada de RateLimitStore."
+            )
 
     fingerprint_source = (
         app_settings.jwt_secret_key.encode("utf-8")
@@ -70,6 +83,7 @@ def create_app(
     )
     application.state.settings = app_settings
     application.state.auth_rate_limiter = auth_rate_limiter
+    application.state.rate_limit_store = auth_rate_limiter.store
     application.include_router(auth_router)
     application.include_router(personal_data_router)
 
@@ -83,7 +97,36 @@ def create_app(
             content={"detail": "Os dados da requisição são inválidos."},
         )
 
+    @application.exception_handler(Exception)
+    async def sanitized_internal_error(_request: Request, error: Exception) -> JSONResponse:
+        # A exceção pode carregar SQL, parâmetros ou dados enviados pelo usuário.
+        # O identificador correlaciona o log e a resposta sem expor a exceção.
+        error_id = secrets.token_hex(8)
+        _logger.error("Falha interna da API (id=%s, tipo=%s).", error_id, type(error).__name__)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Não foi possível processar a requisição.",
+                "request_id": error_id,
+            },
+        )
+
     return application
 
 
-app = create_app()
+def _create_asgi_entrypoint() -> FastAPI:
+    """Mantém importável o módulo, mas falha no startup sem configuração explícita."""
+    try:
+        return create_app()
+    except SettingsError as configuration_error:
+        startup_error = configuration_error
+
+        @asynccontextmanager
+        async def reject_startup(_application: FastAPI) -> AsyncIterator[None]:
+            raise RuntimeError("Configuração obrigatória ausente ou insegura.") from startup_error
+            yield
+
+        return FastAPI(lifespan=reject_startup)
+
+
+app = _create_asgi_entrypoint()

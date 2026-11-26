@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.db.models import (
     EducationORM,
@@ -14,6 +15,8 @@ from app.db.models import (
     SearchCriteriaORM,
     UserORM,
 )
+from app.db.base import Base
+from app.db.session import create_database_engine, create_session_factory
 from app.models.job_vacancy import JobRequirement, JobVacancy
 from app.models.professional_profile import (
     CourseCertification,
@@ -296,3 +299,53 @@ def test_transaction_rollback_removes_user_and_all_related_records(database_engi
     with Session(database_engine) as verification:
         assert verification.get(UserORM, user_id) is None
         assert verification.scalars(select(SearchCriteriaORM)).all() == []
+
+
+@pytest.mark.parametrize("resource", ["criteria", "profile"])
+def test_optimistic_versioning_rejects_stale_personal_data_write(resource, tmp_path) -> None:
+    database_file = tmp_path / "concurrency.sqlite3"
+    engine = create_database_engine(f"sqlite+pysqlite:///{database_file}")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    try:
+        with factory.begin() as setup:
+            user = UserORM()
+            setup.add(user)
+            setup.flush()
+            user_id = user.id
+            if resource == "criteria":
+                SearchCriteriaRepository().save(setup, user_id, SearchCriteria(desired_title="Original"))
+            else:
+                ProfessionalProfileRepository().save(setup, user_id, ProfessionalProfile(name="Original"))
+
+        with factory() as first, factory() as stale:
+            if resource == "criteria":
+                repo = SearchCriteriaRepository()
+                original_first = repo.get_by_user_id(first, user_id)
+                original_stale = repo.get_by_user_id(stale, user_id)
+                repo.save(first, user_id, SearchCriteria(desired_title="Primeira gravação"))
+                first.commit()
+                with pytest.raises(StaleDataError):
+                    repo.save(stale, user_id, SearchCriteria(desired_title="Gravação obsoleta"))
+                stale.rollback()
+                assert original_first is not None and original_stale is not None
+            else:
+                repo = ProfessionalProfileRepository()
+                original_first = repo.get_by_user_id(first, user_id)
+                original_stale = repo.get_by_user_id(stale, user_id)
+                repo.save(first, user_id, ProfessionalProfile(name="Primeira gravação"))
+                first.commit()
+                with pytest.raises(StaleDataError):
+                    repo.save(stale, user_id, ProfessionalProfile(name="Gravação obsoleta"))
+                stale.rollback()
+                assert original_first is not None and original_stale is not None
+
+        with factory() as verification:
+            if resource == "criteria":
+                saved = SearchCriteriaRepository().get_by_user_id(verification, user_id)
+                assert saved is not None and saved.desired_title == "Primeira gravação"
+            else:
+                saved = ProfessionalProfileRepository().get_by_user_id(verification, user_id)
+                assert saved is not None and saved.name == "Primeira gravação"
+    finally:
+        engine.dispose()

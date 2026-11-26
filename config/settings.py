@@ -4,6 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 import os
 
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine import make_url
+
 
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _APP_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
@@ -47,7 +50,10 @@ class Settings:
             value = source.get(name, "").strip()
             return value or None
 
-        app_env = (optional_value("APP_ENV") or "development").casefold()
+        raw_app_env = optional_value("APP_ENV")
+        if raw_app_env is None:
+            raise SettingsError("APP_ENV deve ser definido explicitamente.")
+        app_env = raw_app_env.casefold()
         if app_env not in _APP_ENVIRONMENTS:
             allowed = ", ".join(sorted(_APP_ENVIRONMENTS))
             raise SettingsError(f"APP_ENV inválido. Escolha um destes valores: {allowed}.")
@@ -84,6 +90,8 @@ class Settings:
             cookie_secure = False
         else:
             raise SettingsError("AUTH_COOKIE_SECURE deve ser true ou false.")
+        if app_env == "production" and raw_cookie_secure.casefold() != "true":
+            raise SettingsError("AUTH_COOKIE_SECURE deve ser definido exatamente como true em produção.")
 
         jwt_issuer = optional_value("JWT_ISSUER") or "linkedin-ai-agent"
         jwt_audience = optional_value("JWT_AUDIENCE") or "linkedin-ai-agent-client"
@@ -109,8 +117,14 @@ class Settings:
     def validate_authentication(self) -> None:
         """Confere segredos e cookies antes de atender requisições autenticadas."""
         self.validate_environment()
-        if not self.jwt_secret_key or len(self.jwt_secret_key.encode("utf-8")) < 32:
-            raise SettingsError("JWT_SECRET_KEY deve conter ao menos 32 bytes aleatórios.")
+        if (
+            not self.jwt_secret_key
+            or len(self.jwt_secret_key.encode("utf-8")) < 32
+            or len(set(self.jwt_secret_key)) < 12
+        ):
+            raise SettingsError(
+                "JWT_SECRET_KEY deve conter ao menos 32 bytes e variedade suficiente."
+            )
         if self.auth_cookie_samesite not in _SAME_SITE_VALUES:
             raise SettingsError("AUTH_COOKIE_SAMESITE deve ser 'lax', 'strict' ou 'none'.")
         if self.auth_cookie_samesite == "none" and not self.auth_cookie_secure:
@@ -121,6 +135,21 @@ class Settings:
             raise SettingsError("JWT_ISSUER e JWT_AUDIENCE não podem ficar vazios.")
         if self.app_env.casefold() == "production" and not self.auth_cookie_secure:
             raise SettingsError("AUTH_COOKIE_SECURE deve estar habilitado em produção.")
+
+    def validate_database(self, *, production: bool = False) -> None:
+        """Valida a URL do banco sem incluí-la em mensagens de erro."""
+        if not self.database_url:
+            if production:
+                raise SettingsError("DATABASE_URL deve ser configurada em produção.")
+            return
+        try:
+            parsed = make_url(self.database_url)
+        except (ArgumentError, TypeError, ValueError):
+            raise SettingsError("DATABASE_URL não contém uma URL de banco válida.") from None
+        if parsed.drivername not in {"postgresql+psycopg", "sqlite", "sqlite+pysqlite"}:
+            raise SettingsError("DATABASE_URL deve usar PostgreSQL ou SQLite.")
+        if production and parsed.drivername != "postgresql+psycopg":
+            raise SettingsError("DATABASE_URL deve usar PostgreSQL em produção.")
 
     def validate_environment(self) -> None:
         """Rejeita ambientes desconhecidos, inclusive em objetos construídos diretamente."""

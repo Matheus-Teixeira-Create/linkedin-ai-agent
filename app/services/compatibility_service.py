@@ -1,7 +1,7 @@
 """Compara requisitos declarados de uma vaga com um perfil profissional."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 import unicodedata
@@ -98,7 +98,7 @@ class CompatibilityService:
         if not isinstance(vacancy, JobVacancy):
             raise CompatibilityValidationError("vacancy deve ser JobVacancy.")
         reference_date = as_of or date.today()
-        if not isinstance(reference_date, date):
+        if isinstance(reference_date, datetime) or not isinstance(reference_date, date):
             raise CompatibilityValidationError("as_of deve ser uma data.")
 
         assessments = tuple(self._assess(profile, requirement, reference_date) for requirement in vacancy.requirements)

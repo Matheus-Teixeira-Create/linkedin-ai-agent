@@ -1,10 +1,13 @@
 """Testes HTTP de propriedade e isolamento dos dados pessoais por usuário."""
 
 from uuid import UUID
+import secrets
 
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.exc import IntegrityError
 
 from app.api.dependencies import get_db_session
 from app.db.models import ProfessionalProfileORM, SearchCriteriaORM
@@ -18,7 +21,7 @@ from config.settings import Settings
 @pytest.fixture
 def personal_data_client(database_engine):
     factory = create_session_factory(database_engine)
-    app = create_app(Settings(jwt_secret_key="x" * 48))
+    app = create_app(Settings(jwt_secret_key=secrets.token_urlsafe(48)))
 
     def override_database_session():
         with factory() as session:
@@ -222,3 +225,71 @@ def test_existing_repository_data_remains_available_to_its_owner(personal_data_c
             SearchCriteria(desired_title="Critério legado"),
         )
     assert client.get("/me/search-criteria").json()["desired_title"] == "Critério legado"
+
+
+def test_concurrent_write_conflict_returns_generic_http_409(personal_data_client, monkeypatch) -> None:
+    client, _ = personal_data_client
+    _register(client, "ana@example.com")
+    credentials = _login(client, "ana@example.com")
+    _as_user(client, credentials)
+
+    def stale_write(*args, **kwargs):
+        raise StaleDataError("valor sensível de banco")
+
+    monkeypatch.setattr(SearchCriteriaRepository, "save", stale_write)
+    response = client.put(
+        "/me/search-criteria",
+        json={"desired_title": "Desenvolvedora"},
+        headers=_csrf(credentials),
+    )
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Os dados foram alterados simultaneamente. Recarregue e tente novamente."
+    }
+    assert "valor sensível" not in response.text
+
+
+def test_creation_constraint_conflict_returns_http_409(personal_data_client, monkeypatch) -> None:
+    client, _ = personal_data_client
+    _register(client, "bia@example.com")
+    credentials = _login(client, "bia@example.com")
+    _as_user(client, credentials)
+
+    def duplicate_creation(*args, **kwargs):
+        raise IntegrityError("INSERT", {}, RuntimeError("valor interno"))
+
+    monkeypatch.setattr(SearchCriteriaRepository, "save", duplicate_creation)
+    response = client.put(
+        "/me/search-criteria",
+        json={"desired_title": "Analista"},
+        headers=_csrf(credentials),
+    )
+    assert response.status_code == 409
+    assert "valor interno" not in response.text
+
+
+def test_internal_error_response_and_log_do_not_expose_personal_data(
+    personal_data_client, monkeypatch, caplog
+) -> None:
+    import logging
+    from fastapi.testclient import TestClient
+
+    client, _ = personal_data_client
+    _register(client, "caio@example.com")
+    credentials = _login(client, "caio@example.com")
+    safe_client = TestClient(client.app, raise_server_exceptions=False)
+    _as_user(safe_client, credentials)
+
+    def database_failure(*args, **kwargs):
+        raise RuntimeError("e-mail privado e SQL confidencial")
+
+    monkeypatch.setattr(SearchCriteriaRepository, "get_by_user_id", database_failure)
+    with caplog.at_level(logging.ERROR):
+        response = safe_client.get("/me/search-criteria")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Não foi possível processar a requisição."
+    assert len(response.json()["request_id"]) == 16
+    assert "e-mail privado" not in response.text
+    assert "e-mail privado" not in caplog.text
+    safe_client.close()
