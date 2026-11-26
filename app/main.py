@@ -6,9 +6,12 @@ import hmac
 import secrets
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.personal_data import router as personal_data_router
 from app.db.session import create_database_engine, create_session_factory
 from app.security.rate_limiting import (
     AuthRateLimitPolicy,
@@ -68,6 +71,18 @@ def create_app(
     application.state.settings = app_settings
     application.state.auth_rate_limiter = auth_rate_limiter
     application.include_router(auth_router)
+    application.include_router(personal_data_router)
+
+    @application.exception_handler(RequestValidationError)
+    async def sanitized_validation_error(
+        _request: Request, _error: RequestValidationError
+    ) -> JSONResponse:
+        # Erros padrão do Pydantic podem ecoar o conteúdo enviado no corpo.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Os dados da requisição são inválidos."},
+        )
+
     return application
 
 
