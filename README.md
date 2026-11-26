@@ -4,7 +4,7 @@ Assistente de inteligência artificial para planejar e aprimorar uma presença p
 
 ## Estado do projeto
 
-Este repositório contém atualmente configurações lidas do ambiente e os respectivos testes unitários. Nenhum provedor de IA, API do LinkedIn, fluxo na nuvem ou recurso de publicação está implementado ou conectado. O projeto não coleta dados do LinkedIn por scraping nem automatiza curtidas, comentários, conexões ou mensagens.
+Este repositório contém modelos e serviços de domínio para critérios de busca, perfil profissional e vagas, além de uma camada de persistência SQLAlchemy com migrations Alembic. A aplicação ainda não implementa FastAPI, autenticação, provedor de IA, API do LinkedIn, fluxo na nuvem ou recurso de publicação. O projeto não coleta dados do LinkedIn por scraping nem automatiza curtidas, comentários, conexões ou mensagens.
 
 O acesso à API do LinkedIn depende das permissões e da aprovação concedidas ao aplicativo. Qualquer publicação futura exigirá aprovação humana explícita, salvo se houver um fluxo autorizado definido.
 
@@ -33,21 +33,39 @@ A primeira versão manterá um núcleo Python pequeno e adicionará módulos ape
 | `app/models/search_criteria.py` | Modelo validado e independente de persistência para os critérios de busca. |
 | `app/services/search_criteria_service.py` | Atualização, substituição e limpeza dos critérios em memória. |
 | `tests/test_search_criteria.py` | Testes do modelo e do serviço de critérios de busca. |
+| `app/models/professional_profile.py` | Modelos de domínio independentes para dados do perfil profissional. |
+| `app/services/professional_profile_service.py` | Gerenciamento em memória do perfil profissional. |
+| `app/models/job_vacancy.py` e `app/services/compatibility_service.py` | Modelo de vaga e avaliação de compatibilidade com o perfil. |
+| `app/db/` | Base declarativa, engine, sessões e modelos ORM separados do domínio. |
+| `app/repositories/` | Persistência e conversão dos critérios, perfil e vagas. |
+| `migrations/` e `alembic.ini` | Revisões versionadas do esquema com Alembic. |
+| `tests/test_database_persistence.py` | Testes dos repositórios com SQLite em memória. |
+| `tests/test_database_migrations.py` | Verificação de upgrade e downgrade da migration inicial. |
 | `.env.example` | Nomes das configurações locais previstas, sem credenciais. |
 
-À medida que as funcionalidades forem aprovadas, poderão ser adicionados serviços, modelos, testes, documentação e fluxos do GitHub Actions quando houver necessidade real. O desenho inicial não exige FastAPI nem banco de dados; essas escolhas poderão ser reavaliadas quando houver um caso de uso concreto.
+Os modelos ORM ficam separados das dataclasses de domínio. Critérios e perfil são associados a um `user_id`; as vagas formam um catálogo compartilhado. A tabela mínima de usuários ainda não contém credenciais de autenticação.
 
 ## Configuração local
 
-Use Python 3.11 ou mais recente. No PowerShell, ative o ambiente virtual `venv` existente e instale as dependências de desenvolvimento:
+Use Python 3.11 ou mais recente. No PowerShell, ative o ambiente virtual `.venv` do projeto e instale as dependências de desenvolvimento (que também incluem as dependências de execução):
 
 ```powershell
-.\venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
 O módulo de configurações lê variáveis do ambiente do processo. Use `.env.example` como referência local e disponibilize os valores ao processo pelo ambiente de desenvolvimento; a aplicação não interpreta arquivos `.env` diretamente.
+
+## Banco de dados e migrations
+
+PostgreSQL é o banco principal. Defina `DATABASE_URL` no ambiente local com uma URL no formato `postgresql+psycopg://...`; não grave credenciais em arquivos versionados. O repositório não cria o banco PostgreSQL nem inicia serviços automaticamente. Depois de preparar um banco e configurar a URL, aplique o esquema com:
+
+```powershell
+python -m alembic upgrade head
+```
+
+Os testes de persistência usam SQLite em memória e não exigem servidor PostgreSQL. As chaves estrangeiras do SQLite são habilitadas pelo engine de testes.
 
 ## Configuração e segurança
 

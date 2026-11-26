@@ -13,6 +13,7 @@ def test_from_env_uses_safe_defaults() -> None:
     assert settings.linkedin_client_id is None
     assert settings.linkedin_client_secret is None
     assert settings.linkedin_redirect_uri is None
+    assert settings.database_url is None
 
 
 def test_from_env_trims_values_and_normalizes_log_level() -> None:
@@ -22,6 +23,7 @@ def test_from_env_trims_values_and_normalizes_log_level() -> None:
             "LOG_LEVEL": " debug ",
             "AI_PROVIDER": " local-model ",
             "LINKEDIN_CLIENT_ID": " client-id ",
+            "DATABASE_URL": " postgresql+psycopg://local:secret@localhost/app ",
         }
     )
 
@@ -29,6 +31,7 @@ def test_from_env_trims_values_and_normalizes_log_level() -> None:
     assert settings.log_level == "DEBUG"
     assert settings.ai_provider == "local-model"
     assert settings.linkedin_client_id == "client-id"
+    assert settings.database_url == "postgresql+psycopg://local:secret@localhost/app"
 
 
 def test_from_env_treats_blank_values_as_unset() -> None:
@@ -41,6 +44,7 @@ def test_from_env_treats_blank_values_as_unset() -> None:
             "LINKEDIN_CLIENT_ID": "",
             "LINKEDIN_CLIENT_SECRET": " ",
             "LINKEDIN_REDIRECT_URI": "",
+            "DATABASE_URL": " ",
         }
     )
 
@@ -51,6 +55,7 @@ def test_from_env_treats_blank_values_as_unset() -> None:
     assert settings.linkedin_client_id is None
     assert settings.linkedin_client_secret is None
     assert settings.linkedin_redirect_uri is None
+    assert settings.database_url is None
 
 
 def test_from_env_rejects_unknown_log_level() -> None:
@@ -63,8 +68,10 @@ def test_secret_values_are_not_in_settings_repr() -> None:
         {
             "AI_API_KEY": "ai-secret-value",
             "LINKEDIN_CLIENT_SECRET": "linkedin-secret-value",
+            "DATABASE_URL": "postgresql+psycopg://user:db-secret@localhost/app",
         }
     )
 
     assert "ai-secret-value" not in repr(settings)
     assert "linkedin-secret-value" not in repr(settings)
+    assert "db-secret" not in repr(settings)
