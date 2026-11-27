@@ -92,15 +92,9 @@ def create_app(
         app_settings.validate_authentication()
     app_settings.validate_database(production=app_settings.app_env.casefold() == "production")
     if app_settings.app_env.casefold() == "production":
-        if (
-            rate_limit_store is None
-            or isinstance(rate_limit_store, InMemoryRateLimitStore)
-            or getattr(rate_limit_store, "is_shared", False) is not True
-            or not callable(getattr(rate_limit_store, "check_and_record", None))
-        ):
-            raise SettingsError(
-                "Produção exige uma implementação compartilhada de RateLimitStore."
-            )
+        raise SettingsError(
+            "Produção está bloqueada até existir um armazenamento compartilhado de rate limiting concreto e validado."
+        )
 
     fingerprint_source = (
         app_settings.jwt_secret_key.encode("utf-8")

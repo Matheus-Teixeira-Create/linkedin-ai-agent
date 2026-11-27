@@ -15,6 +15,17 @@ _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _APP_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
 _SAME_SITE_VALUES = frozenset({"lax", "strict", "none"})
 _JWT_SECRET_FORMAT = re.compile(r"[A-Za-z0-9_-]+\Z")
+_KNOWN_PREDICTABLE_FRAGMENTS = (
+    b"password",
+    b"passw0rd",
+    b"qwerty",
+    b"asdfgh",
+    b"zxcvbn",
+    b"letmein",
+    b"changeme",
+    b"default",
+    b"secret",
+)
 
 
 def _contains_obvious_sequence(value: bytes) -> bool:
@@ -40,7 +51,9 @@ def _contains_obvious_sequence(value: bytes) -> bool:
 
 
 def _is_repetitive(value: bytes) -> bool:
-    for period in range(1, min(16, len(value) // 2) + 1):
+    # Procura qualquer bloco que se repita exatamente, sem limitar o período
+    # a um tamanho fixo (por exemplo, 17 bytes).
+    for period in range(1, len(value) // 2 + 1):
         if len(value) % period == 0 and value == value[:period] * (len(value) // period):
             return True
     return False
@@ -67,15 +80,17 @@ def _validate_jwt_secret(value: str | None) -> None:
     canonical = base64.urlsafe_b64encode(material).decode("ascii").rstrip("=")
     if canonical != value:
         raise SettingsError("JWT_SECRET_KEY deve usar codificação Base64 URL-safe canônica.")
+    normalized_material = material.lower()
     if (
         len(material) < 32
         or _is_repetitive(value.encode("ascii"))
         or _is_repetitive(material)
         or _contains_obvious_sequence(value.encode("ascii"))
         or _contains_obvious_sequence(material)
+        or any(fragment in normalized_material for fragment in _KNOWN_PREDICTABLE_FRAGMENTS)
     ):
         raise SettingsError(
-            "JWT_SECRET_KEY deve representar ao menos 256 bits e não pode conter padrões previsíveis."
+            "JWT_SECRET_KEY deve representar ao menos 256 bits e não pode corresponder a padrões previsíveis conhecidos."
         )
 
 

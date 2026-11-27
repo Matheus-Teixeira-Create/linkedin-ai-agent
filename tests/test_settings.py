@@ -7,7 +7,9 @@ from app.main import create_app
 from config.settings import Settings, SettingsError
 
 
-class SharedStore:
+class FakeDeclaredSharedStore:
+    """Reproduz um adaptador que apenas declara compartilhar o estado."""
+
     is_shared = True
 
     def check_and_record(self, rules):
@@ -171,7 +173,7 @@ def test_asgi_entrypoint_refuses_to_start_without_explicit_app_env(monkeypatch) 
             pass
 
 
-def test_valid_production_configuration_starts_with_required_values() -> None:
+def test_valid_production_settings_still_cannot_start_without_a_concrete_shared_store() -> None:
     settings = Settings.from_env(
         {
             "APP_ENV": "production",
@@ -180,15 +182,15 @@ def test_valid_production_configuration_starts_with_required_values() -> None:
             "DATABASE_URL": "postgresql+psycopg://user:password@localhost/app",
         }
     )
-    application = create_app(settings, rate_limit_store=SharedStore())
-    assert application.state.settings.app_env == "production"
+    settings.validate_authentication()
+    with pytest.raises(SettingsError, match="armazenamento compartilhado.*concreto e validado"):
+        create_app(settings)
 
 
 def test_jwt_secret_accepts_at_least_256_random_bits() -> None:
     secret = secrets.token_urlsafe(48)
     settings = _production_settings(secret)
     settings.validate_authentication()
-    assert create_app(settings, rate_limit_store=SharedStore()).state.settings is settings
 
 
 @pytest.mark.parametrize(
@@ -196,31 +198,40 @@ def test_jwt_secret_accepts_at_least_256_random_bits() -> None:
     [
         None,
         "",
+        "chave*malformada",
         secrets.token_urlsafe(16),
         base64.urlsafe_b64encode(b"R" * 32).decode("ascii").rstrip("="),
         "abcdefghijkl" * 3,
         base64.urlsafe_b64encode(bytes(range(32))).decode("ascii").rstrip("="),
+        base64.urlsafe_b64encode(b"Passw0rd!EntropyX" * 2).decode("ascii").rstrip("="),
+        base64.urlsafe_b64encode(b"password" + secrets.token_bytes(32)).decode("ascii").rstrip("="),
+        base64.urlsafe_b64encode(b"qwertyuiop" + secrets.token_bytes(32)).decode("ascii").rstrip("="),
     ],
-    ids=["ausente", "vazio", "curto", "repetitivo", "sequencia-alfabetica", "bytes-sequenciais"],
+    ids=[
+        "ausente", "vazio", "malformado", "curto", "repetitivo", "sequencia-alfabetica",
+        "bytes-sequenciais", "padrao-da-auditoria", "senha-conhecida", "sequencia-de-teclado",
+    ],
 )
 def test_jwt_secret_rejects_short_empty_repetitive_and_predictable_values(secret) -> None:
     with pytest.raises(SettingsError, match="JWT_SECRET_KEY"):
-        create_app(_production_settings(secret), rate_limit_store=SharedStore())
+        create_app(_production_settings(secret), rate_limit_store=FakeDeclaredSharedStore())
 
 
-def test_production_rejects_missing_or_process_local_rate_limit_store() -> None:
+def test_production_rejects_missing_memory_and_fake_declared_shared_rate_limit_stores() -> None:
     settings = Settings(
         app_env="production",
         jwt_secret_key=secrets.token_urlsafe(48),
         database_url="postgresql+psycopg://user:password@localhost/app",
         auth_cookie_secure=True,
     )
-    with pytest.raises(SettingsError, match="RateLimitStore"):
+    with pytest.raises(SettingsError, match="armazenamento compartilhado.*concreto e validado"):
         create_app(settings)
     from app.security.rate_limiting import InMemoryRateLimitStore
 
-    with pytest.raises(SettingsError, match="RateLimitStore"):
+    with pytest.raises(SettingsError, match="armazenamento compartilhado.*concreto e validado"):
         create_app(settings, rate_limit_store=InMemoryRateLimitStore())
+    with pytest.raises(SettingsError, match="armazenamento compartilhado.*concreto e validado"):
+        create_app(settings, rate_limit_store=FakeDeclaredSharedStore())
 
 
 def test_secret_values_are_not_in_settings_repr() -> None:

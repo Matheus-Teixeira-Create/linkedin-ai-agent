@@ -37,16 +37,12 @@ class RateLimitStore(Protocol):
     ``RateLimitStoreError`` para que as rotas falhem de forma fechada.
     """
 
-    is_shared: bool
-
     def check_and_record(self, rules: Sequence[RateLimitRule]) -> int | None:
         """Retorna segundos para retry, ou ``None`` quando as regras permitem."""
 
 
 class InMemoryRateLimitStore:
     """Armazenamento de processo único; não serve para produção distribuída."""
-
-    is_shared = False
 
     def __init__(self, clock=time.monotonic, *, max_buckets: int = 100_000) -> None:
         if max_buckets < 1:
