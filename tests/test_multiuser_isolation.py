@@ -21,7 +21,7 @@ from config.settings import Settings
 @pytest.fixture
 def personal_data_client(database_engine):
     factory = create_session_factory(database_engine)
-    app = create_app(Settings(jwt_secret_key=secrets.token_urlsafe(48)))
+    app = create_app(Settings(app_env="test", jwt_secret_key=secrets.token_urlsafe(48)))
 
     def override_database_session():
         with factory() as session:
@@ -277,7 +277,9 @@ def test_internal_error_response_and_log_do_not_expose_personal_data(
     client, _ = personal_data_client
     _register(client, "caio@example.com")
     credentials = _login(client, "caio@example.com")
-    safe_client = TestClient(client.app, raise_server_exceptions=False)
+    # O cliente ASGI padrão relança exceções não tratadas; aqui 500 deve ser
+    # devolvido sem propagar o erro sensível ao transporte.
+    safe_client = TestClient(client.app)
     _as_user(safe_client, credentials)
 
     def database_failure(*args, **kwargs):

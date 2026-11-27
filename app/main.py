@@ -10,6 +10,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import Message, Receive, Scope, Send
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.personal_data import router as personal_data_router
@@ -24,6 +25,58 @@ from config.settings import Settings, SettingsError
 
 
 _logger = logging.getLogger(__name__)
+
+
+class SafeFastAPI(FastAPI):
+    """Impede que exceções já convertidas em HTTP 500 cheguem ao servidor ASGI."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await super().__call__(scope, receive, send)
+            return
+
+        response_started = False
+        send_failed = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started, send_failed
+            if message["type"] == "http.response.start":
+                response_started = True
+            try:
+                await send(message)
+            except Exception:
+                send_failed = True
+                raise
+
+        try:
+            await super().__call__(scope, receive, tracked_send)
+        except Exception as error:
+            if send_failed:
+                error_id = secrets.token_hex(8)
+                _logger.error(
+                    "Falha de transporte ASGI (id=%s, tipo=%s).",
+                    error_id,
+                    type(error).__name__,
+                )
+                return
+            if response_started:
+                # O handler interno já registrou um identificador sem a exceção.
+                return
+
+            error_id = secrets.token_hex(8)
+            _logger.error(
+                "Falha ASGI antes da resposta (id=%s, tipo=%s).",
+                error_id,
+                type(error).__name__,
+            )
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "Não foi possível processar a requisição.",
+                    "request_id": error_id,
+                },
+            )
+            await response(scope, receive, send)
 
 
 def create_app(
@@ -76,7 +129,7 @@ def create_app(
             if engine is not None:
                 engine.dispose()
 
-    application = FastAPI(
+    application = SafeFastAPI(
         title="LinkedIn AI Agent",
         description="API de autenticação e gerenciamento de usuários.",
         lifespan=lifespan,
@@ -126,7 +179,7 @@ def _create_asgi_entrypoint() -> FastAPI:
             raise RuntimeError("Configuração obrigatória ausente ou insegura.") from startup_error
             yield
 
-        return FastAPI(lifespan=reject_startup)
+        return SafeFastAPI(lifespan=reject_startup)
 
 
 app = _create_asgi_entrypoint()

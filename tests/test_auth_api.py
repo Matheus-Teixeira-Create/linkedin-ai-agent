@@ -17,6 +17,7 @@ def auth_client(database_engine):
     factory = create_session_factory(database_engine)
     app = create_app(
         Settings(
+            app_env="test",
             database_url=None,
             jwt_secret_key=secrets.token_urlsafe(48),
             auth_cookie_secure=False,
@@ -137,6 +138,7 @@ def test_login_sets_http_only_cookies_and_authenticated_user_response(auth_clien
 
 def test_production_cookie_configuration_sets_secure_flag(auth_client) -> None:
     auth_client.app.state.settings = Settings(
+        app_env="test",
         jwt_secret_key=secrets.token_urlsafe(48),
         auth_cookie_secure=True,
         auth_cookie_samesite="strict",

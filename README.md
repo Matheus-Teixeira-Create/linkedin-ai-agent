@@ -74,12 +74,14 @@ Os testes de persistência usam SQLite em memória e não exigem servidor Postgr
 
 A API oferece cadastro, login, renovação, logout e consulta do usuário autenticado em `/auth`. Senhas são armazenadas com Argon2id; access tokens JWT e refresh tokens não são retornados no corpo JSON. O access token e o refresh token são enviados em cookies `HttpOnly`; o cookie CSRF é acompanhado pelo cabeçalho `X-CSRF-Token` nas operações protegidas. Em produção, cookies `Secure` são obrigatórios. O refresh token é rotacionado e apenas seu hash é persistido.
 
-Defina `APP_ENV=development` e `JWT_SECRET_KEY` no ambiente do processo. Para desenvolvimento local, gere uma chave com:
+Defina `APP_ENV=development` e `JWT_SECRET_KEY` no ambiente do processo. A chave deve ser Base64 URL-safe canônica de pelo menos 32 bytes gerados por um CSPRNG. Para desenvolvimento local, gere 48 bytes aleatórios com:
 
 ```powershell
 $env:APP_ENV = "development"
 $env:JWT_SECRET_KEY = python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
+
+A validação confere o formato, o tamanho decodificado e padrões previsíveis simples, mas não consegue provar a entropia da chave. Gere-a com um gerador criptográfico e armazene-a somente em variável de ambiente ou gerenciador de segredos. A aplicação não cria uma chave padrão.
 
 Em HTTP local, mantenha a chave apenas no ambiente do terminal e use `AUTH_COOKIE_SECURE=false`; em produção mantenha `AUTH_COOKIE_SECURE=true`. `AUTH_COOKIE_SAMESITE` aceita `lax`, `strict` ou `none`; o último exige cookies `Secure`. `JWT_ISSUER`, `JWT_AUDIENCE`, `ACCESS_TOKEN_TTL_MINUTES` e `REFRESH_TOKEN_TTL_DAYS` também podem ser ajustados pelo ambiente. O arquivo `.env.example` documenta os nomes, mas a aplicação não lê arquivos `.env` diretamente.
 
@@ -111,7 +113,7 @@ Execute os testes unitários com `python -m pytest`. Pytest é uma dependência 
 
 Use Conventional Commits nas próximas alterações, por exemplo, `feat: adicionar gerador de rascunhos` ou `docs: documentar configuração local`. Não faça commit ou push sem autorização explícita.
 
-Em produção, configure explicitamente `APP_ENV=production`, `AUTH_COOKIE_SECURE=true`, `JWT_SECRET_KEY` com ao menos 32 bytes aleatórios e `DATABASE_URL` com PostgreSQL (`postgresql+psycopg://...`). URL inválida, banco diferente de PostgreSQL, segredo ausente/fraco ou cookie inseguro impedem a inicialização. Não use credenciais no código nem em arquivos versionados.
+Em produção, configure explicitamente `APP_ENV=production`, `AUTH_COOKIE_SECURE=true`, `JWT_SECRET_KEY` como Base64 URL-safe canônica de ao menos 32 bytes aleatórios e `DATABASE_URL` com PostgreSQL (`postgresql+psycopg://...`). URL inválida, banco diferente de PostgreSQL, segredo ausente/curto/previsível ou cookie inseguro impedem a inicialização. Não use credenciais no código nem em arquivos versionados; injete o segredo por variável de ambiente ou gerenciador de segredos.
 
 Cadastro e login têm limites independentes por endereço IP e por conta: login permite até 30 tentativas por IP e 10 por e-mail a cada 15 minutos; cadastro permite até 20 por IP e 5 por e-mail a cada hora. A resposta `429` é genérica e inclui `Retry-After`. O IP vem do peer da conexão ASGI; cabeçalhos encaminhados fornecidos pelo cliente não são usados diretamente. Se houver proxy reverso, configure no servidor ASGI somente os endereços de proxy confiáveis.
 
@@ -123,7 +125,7 @@ Critérios e perfis usam controle otimista de versão. Se duas gravações parti
 
 Antes de aplicar migrations em produção, faça e valide um backup recuperável. O downgrade da migration de autenticação remove e-mails, hashes de senha, flags de conta e tabelas de sessões/refresh tokens; isso destrói dados de autenticação. Execute downgrade somente com plano de recuperação aprovado e backup verificado. As migrations já aplicadas não devem ser editadas; a correção de concorrência foi adicionada em uma migration nova e aditiva.
 
-Falhas internas são respondidas com mensagem genérica. Os logs da aplicação não registram corpos, senhas, tokens, cookies ou mensagens/tracebacks de exceções de banco, para evitar vazamento de valores SQL e dados pessoais.
+Falhas internas são respondidas com mensagem genérica e identificador de correlação. O wrapper ASGI impede que exceções HTTP já respondidas sejam relançadas ao servidor, evitando que o Uvicorn grave seus tracebacks. Os logs da aplicação registram somente o identificador e o tipo da falha, nunca corpos, senhas, tokens, cookies ou mensagens/tracebacks de exceções de banco. Cancelamentos e erros de inicialização do lifespan continuam sendo propagados.
 
 ## Execução na nuvem
 

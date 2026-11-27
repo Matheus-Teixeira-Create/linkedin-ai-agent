@@ -47,7 +47,7 @@ def limited_client(database_engine):
         register_window_seconds=60,
     )
     app = create_app(
-        Settings(jwt_secret_key=secrets.token_urlsafe(48)),
+        Settings(app_env="test", jwt_secret_key=secrets.token_urlsafe(48)),
         rate_limit_policy=policy,
     )
     app.dependency_overrides[get_db_session] = override_database_session

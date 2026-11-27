@@ -24,7 +24,7 @@ def test_passwords_use_salted_argon2id_hashes() -> None:
 
 
 def test_jwt_has_required_identity_claims_and_decodes_with_fixed_algorithm() -> None:
-    manager = AccessTokenManager(Settings(jwt_secret_key=secrets.token_urlsafe(48)))
+    manager = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secrets.token_urlsafe(48)))
     user_id, session_id = uuid4(), uuid4()
     issued = manager.issue(user_id, session_id)
 
@@ -35,7 +35,7 @@ def test_jwt_has_required_identity_claims_and_decodes_with_fixed_algorithm() -> 
 
 def test_expired_tampered_wrong_issuer_and_wrong_audience_tokens_are_rejected() -> None:
     secret = secrets.token_urlsafe(48)
-    settings = Settings(jwt_secret_key=secret)
+    settings = Settings(app_env="test", jwt_secret_key=secret)
     manager = AccessTokenManager(settings)
     now = datetime.now(UTC)
     user_id, session_id = uuid4(), uuid4()
@@ -49,22 +49,23 @@ def test_expired_tampered_wrong_issuer_and_wrong_audience_tokens_are_rejected() 
     with pytest.raises(InvalidAccessToken):
         manager.decode(altered)
 
-    other_issuer = AccessTokenManager(Settings(jwt_secret_key=secret, jwt_issuer="outro-emissor"))
+    other_issuer = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secret, jwt_issuer="outro-emissor"))
     with pytest.raises(InvalidAccessToken):
         manager.decode(other_issuer.issue(user_id, session_id).value)
 
-    other_audience = AccessTokenManager(Settings(jwt_secret_key=secret, jwt_audience="outro-cliente"))
+    other_audience = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secret, jwt_audience="outro-cliente"))
     with pytest.raises(InvalidAccessToken):
         manager.decode(other_audience.issue(user_id, session_id).value)
 
 
 def test_authentication_secret_is_required_and_hidden_from_repr() -> None:
-    settings = Settings.from_env({"APP_ENV": "test", "JWT_SECRET_KEY": "segredo-de-teste-que-nao-deve-aparecer-123"})
-    assert "segredo-de-teste" not in repr(settings)
+    secret = secrets.token_urlsafe(48)
+    settings = Settings.from_env({"APP_ENV": "test", "JWT_SECRET_KEY": secret})
+    assert secret not in repr(settings)
     settings.validate_authentication()
 
     with pytest.raises(SettingsError, match="JWT_SECRET_KEY"):
-        AccessTokenManager(Settings())
+        AccessTokenManager(Settings(app_env="test"))
     with pytest.raises(SettingsError, match="produção"):
         Settings(
             app_env="production",

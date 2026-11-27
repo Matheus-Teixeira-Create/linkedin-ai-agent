@@ -1,9 +1,26 @@
 import pytest
 import secrets
+import base64
 from fastapi.testclient import TestClient
 
 from app.main import create_app
 from config.settings import Settings, SettingsError
+
+
+class SharedStore:
+    is_shared = True
+
+    def check_and_record(self, rules):
+        return None
+
+
+def _production_settings(jwt_secret: str | None) -> Settings:
+    return Settings(
+        app_env="production",
+        jwt_secret_key=jwt_secret,
+        database_url="postgresql+psycopg://user:password@localhost/app",
+        auth_cookie_secure=True,
+    )
 
 
 def test_from_env_uses_safe_defaults() -> None:
@@ -26,6 +43,19 @@ def test_from_env_rejects_missing_or_blank_app_env() -> None:
         Settings.from_env({})
     with pytest.raises(SettingsError, match="APP_ENV deve ser definido"):
         Settings.from_env({"APP_ENV": "   "})
+
+
+def test_from_env_without_mapping_requires_process_app_env(monkeypatch) -> None:
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with pytest.raises(SettingsError, match="APP_ENV deve ser definido"):
+        Settings.from_env()
+
+
+def test_settings_requires_explicit_environment_when_constructed_directly() -> None:
+    with pytest.raises(SettingsError, match="APP_ENV deve ser definido"):
+        Settings()
+    with pytest.raises(SettingsError, match="APP_ENV deve ser definido"):
+        create_app(Settings())
 
 
 def test_from_env_trims_values_and_normalizes_log_level() -> None:
@@ -150,14 +180,32 @@ def test_valid_production_configuration_starts_with_required_values() -> None:
             "DATABASE_URL": "postgresql+psycopg://user:password@localhost/app",
         }
     )
-    class SharedStore:
-        is_shared = True
-
-        def check_and_record(self, rules):
-            return None
-
     application = create_app(settings, rate_limit_store=SharedStore())
     assert application.state.settings.app_env == "production"
+
+
+def test_jwt_secret_accepts_at_least_256_random_bits() -> None:
+    secret = secrets.token_urlsafe(48)
+    settings = _production_settings(secret)
+    settings.validate_authentication()
+    assert create_app(settings, rate_limit_store=SharedStore()).state.settings is settings
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        None,
+        "",
+        secrets.token_urlsafe(16),
+        base64.urlsafe_b64encode(b"R" * 32).decode("ascii").rstrip("="),
+        "abcdefghijkl" * 3,
+        base64.urlsafe_b64encode(bytes(range(32))).decode("ascii").rstrip("="),
+    ],
+    ids=["ausente", "vazio", "curto", "repetitivo", "sequencia-alfabetica", "bytes-sequenciais"],
+)
+def test_jwt_secret_rejects_short_empty_repetitive_and_predictable_values(secret) -> None:
+    with pytest.raises(SettingsError, match="JWT_SECRET_KEY"):
+        create_app(_production_settings(secret), rate_limit_store=SharedStore())
 
 
 def test_production_rejects_missing_or_process_local_rate_limit_store() -> None:
@@ -192,7 +240,7 @@ def test_secret_values_are_not_in_settings_repr() -> None:
 
 def test_database_url_is_validated_without_echoing_credentials() -> None:
     with pytest.raises(SettingsError, match="URL de banco v\u00e1lida"):
-        create_app(Settings(database_url="not-a-url"))
+        create_app(Settings(app_env="development", database_url="not-a-url"))
     with pytest.raises(SettingsError, match="PostgreSQL em produ\u00e7\u00e3o"):
         create_app(
             Settings(
