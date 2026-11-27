@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.db.models import SearchCriteriaORM, SearchCriteriaSkillORM
 from app.models.search_criteria import SearchCriteria
@@ -20,6 +21,8 @@ class SearchCriteriaRepository:
     def get_by_user_id(self, session: Session, user_id: UUID) -> SearchCriteria | None:
         self._validate_user_id(user_id)
         row = session.scalar(select(SearchCriteriaORM).where(SearchCriteriaORM.user_id == user_id))
+        versions = session.info.setdefault("personal_data_versions", {})
+        versions[(SearchCriteriaORM, user_id)] = row.version if row else None
         return self._to_domain(row) if row else None
 
     def save(self, session: Session, user_id: UUID, criteria: SearchCriteria) -> SearchCriteria:
@@ -27,9 +30,20 @@ class SearchCriteriaRepository:
         if not isinstance(criteria, SearchCriteria):
             raise TypeError("criteria deve ser SearchCriteria.")
         row = session.scalar(select(SearchCriteriaORM).where(SearchCriteriaORM.user_id == user_id))
+        versions = session.info.get("personal_data_versions", {})
+        version_key = (SearchCriteriaORM, user_id)
+        if version_key in versions:
+            expected_version = versions.pop(version_key)
+            if (row is None) != (expected_version is None) or (
+                row is not None and row.version != expected_version
+            ):
+                raise StaleDataError("Os critérios foram alterados durante a requisição.")
         if row is None:
             row = SearchCriteriaORM(user_id=user_id)
             session.add(row)
+        else:
+            # Força uma escrita versionada mesmo quando só as listas mudaram.
+            row.version += 1
         row.skills.clear()
         row.professional_area = criteria.professional_area
         row.desired_title = criteria.desired_title

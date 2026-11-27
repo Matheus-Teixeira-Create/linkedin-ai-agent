@@ -2,12 +2,96 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+import base64
+import binascii
 import os
+import re
+
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.engine import make_url
 
 
 _LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 _APP_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
 _SAME_SITE_VALUES = frozenset({"lax", "strict", "none"})
+_JWT_SECRET_FORMAT = re.compile(r"[A-Za-z0-9_-]+\Z")
+_KNOWN_PREDICTABLE_FRAGMENTS = (
+    b"password",
+    b"passw0rd",
+    b"qwerty",
+    b"asdfgh",
+    b"zxcvbn",
+    b"letmein",
+    b"changeme",
+    b"default",
+    b"secret",
+)
+
+
+def _contains_obvious_sequence(value: bytes) -> bool:
+    known_sequences = (
+        b"abcdefghijklmnopqrstuvwxyz",
+        b"zyxwvutsrqponmlkjihgfedcba",
+        b"0123456789",
+        b"9876543210",
+    )
+    if any(
+        sequence[index : index + 8] in value
+        for sequence in known_sequences
+        for index in range(len(sequence) - 7)
+    ):
+        return True
+    increasing = decreasing = 1
+    for previous, current in zip(value, value[1:]):
+        increasing = increasing + 1 if current == previous + 1 else 1
+        decreasing = decreasing + 1 if current == previous - 1 else 1
+        if increasing >= 8 or decreasing >= 8:
+            return True
+    return False
+
+
+def _is_repetitive(value: bytes) -> bool:
+    # Procura qualquer bloco que se repita exatamente, sem limitar o período
+    # a um tamanho fixo (por exemplo, 17 bytes).
+    for period in range(1, len(value) // 2 + 1):
+        if len(value) % period == 0 and value == value[:period] * (len(value) // period):
+            return True
+    return False
+
+
+def _validate_jwt_secret(value: str | None) -> None:
+    """Exige ao menos 256 bits codificados em Base64 URL-safe canônico.
+
+    Formato e filtros de padrões óbvios não comprovam entropia. A geração deve
+    usar CSPRNG e o armazenamento deve ser feito em variável de ambiente ou
+    gerenciador de segredos.
+    """
+    if not value or not _JWT_SECRET_FORMAT.fullmatch(value):
+        raise SettingsError(
+            "JWT_SECRET_KEY deve ser Base64 URL-safe canônico de ao menos 32 bytes aleatórios."
+        )
+    padding = "=" * (-len(value) % 4)
+    try:
+        material = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError):
+        raise SettingsError(
+            "JWT_SECRET_KEY deve ser Base64 URL-safe canônico de ao menos 32 bytes aleatórios."
+        ) from None
+    canonical = base64.urlsafe_b64encode(material).decode("ascii").rstrip("=")
+    if canonical != value:
+        raise SettingsError("JWT_SECRET_KEY deve usar codificação Base64 URL-safe canônica.")
+    normalized_material = material.lower()
+    if (
+        len(material) < 32
+        or _is_repetitive(value.encode("ascii"))
+        or _is_repetitive(material)
+        or _contains_obvious_sequence(value.encode("ascii"))
+        or _contains_obvious_sequence(material)
+        or any(fragment in normalized_material for fragment in _KNOWN_PREDICTABLE_FRAGMENTS)
+    ):
+        raise SettingsError(
+            "JWT_SECRET_KEY deve representar ao menos 256 bits e não pode corresponder a padrões previsíveis conhecidos."
+        )
 
 
 class SettingsError(ValueError):
@@ -18,7 +102,7 @@ class SettingsError(ValueError):
 class Settings:
     """Objeto de configurações da aplicação, sem dependências externas."""
 
-    app_env: str = "development"
+    app_env: str = ""
     log_level: str = "INFO"
     ai_provider: str | None = None
     ai_api_key: str | None = field(default=None, repr=False)
@@ -34,6 +118,10 @@ class Settings:
     auth_cookie_secure: bool = False
     auth_cookie_samesite: str = "lax"
 
+    def __post_init__(self) -> None:
+        """Exige ambiente explícito também em Settings construído diretamente."""
+        self.validate_environment()
+
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         """Cria configurações a partir de um mapeamento ou de ``os.environ``.
@@ -47,7 +135,10 @@ class Settings:
             value = source.get(name, "").strip()
             return value or None
 
-        app_env = (optional_value("APP_ENV") or "development").casefold()
+        raw_app_env = optional_value("APP_ENV")
+        if raw_app_env is None:
+            raise SettingsError("APP_ENV deve ser definido explicitamente.")
+        app_env = raw_app_env.casefold()
         if app_env not in _APP_ENVIRONMENTS:
             allowed = ", ".join(sorted(_APP_ENVIRONMENTS))
             raise SettingsError(f"APP_ENV inválido. Escolha um destes valores: {allowed}.")
@@ -84,6 +175,8 @@ class Settings:
             cookie_secure = False
         else:
             raise SettingsError("AUTH_COOKIE_SECURE deve ser true ou false.")
+        if app_env == "production" and raw_cookie_secure.casefold() != "true":
+            raise SettingsError("AUTH_COOKIE_SECURE deve ser definido exatamente como true em produção.")
 
         jwt_issuer = optional_value("JWT_ISSUER") or "linkedin-ai-agent"
         jwt_audience = optional_value("JWT_AUDIENCE") or "linkedin-ai-agent-client"
@@ -109,8 +202,7 @@ class Settings:
     def validate_authentication(self) -> None:
         """Confere segredos e cookies antes de atender requisições autenticadas."""
         self.validate_environment()
-        if not self.jwt_secret_key or len(self.jwt_secret_key.encode("utf-8")) < 32:
-            raise SettingsError("JWT_SECRET_KEY deve conter ao menos 32 bytes aleatórios.")
+        _validate_jwt_secret(self.jwt_secret_key)
         if self.auth_cookie_samesite not in _SAME_SITE_VALUES:
             raise SettingsError("AUTH_COOKIE_SAMESITE deve ser 'lax', 'strict' ou 'none'.")
         if self.auth_cookie_samesite == "none" and not self.auth_cookie_secure:
@@ -122,8 +214,27 @@ class Settings:
         if self.app_env.casefold() == "production" and not self.auth_cookie_secure:
             raise SettingsError("AUTH_COOKIE_SECURE deve estar habilitado em produção.")
 
+    def validate_database(self, *, production: bool = False) -> None:
+        """Valida a URL do banco sem incluí-la em mensagens de erro."""
+        if not self.database_url:
+            if production:
+                raise SettingsError("DATABASE_URL deve ser configurada em produção.")
+            return
+        try:
+            parsed = make_url(self.database_url)
+        except (ArgumentError, TypeError, ValueError):
+            raise SettingsError("DATABASE_URL não contém uma URL de banco válida.") from None
+        if parsed.drivername not in {"postgresql+psycopg", "sqlite", "sqlite+pysqlite"}:
+            raise SettingsError("DATABASE_URL deve usar PostgreSQL ou SQLite.")
+        if production and parsed.drivername != "postgresql+psycopg":
+            raise SettingsError("DATABASE_URL deve usar PostgreSQL em produção.")
+
     def validate_environment(self) -> None:
         """Rejeita ambientes desconhecidos, inclusive em objetos construídos diretamente."""
-        if self.app_env.casefold() not in _APP_ENVIRONMENTS:
+        if not isinstance(self.app_env, str) or not self.app_env.strip():
+            raise SettingsError("APP_ENV deve ser definido explicitamente.")
+        normalized = self.app_env.strip().casefold()
+        object.__setattr__(self, "app_env", normalized)
+        if normalized not in _APP_ENVIRONMENTS:
             allowed = ", ".join(sorted(_APP_ENVIRONMENTS))
             raise SettingsError(f"APP_ENV inválido. Escolha um destes valores: {allowed}.")

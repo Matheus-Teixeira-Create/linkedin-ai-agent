@@ -46,7 +46,7 @@ A primeira versão manterá um núcleo Python pequeno e adicionará módulos ape
 | `migrations/versions/` | Evolução aditiva de usuários e criação de sessões/tokens. |
 | `.env.example` | Nomes das configurações locais previstas, sem credenciais. |
 
-Os modelos ORM ficam separados das dataclasses de domínio. Critérios e perfil são associados a um `user_id`; as vagas formam um catálogo compartilhado. A tabela mínima de usuários ainda não contém credenciais de autenticação.
+Os modelos ORM ficam separados das dataclasses de domínio. Critérios e perfil são associados a um `user_id`; as vagas formam um catálogo compartilhado. A tabela `users` contém e-mail normalizado, hash de senha Argon2id e estado da conta; usuários legados podem manter esses campos nulos até uma vinculação explícita.
 
 ## Configuração local
 
@@ -58,7 +58,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-O módulo de configurações lê variáveis do ambiente do processo. Use `.env.example` como referência local e disponibilize os valores ao processo pelo ambiente de desenvolvimento; a aplicação não interpreta arquivos `.env` diretamente.
+O módulo de configurações lê variáveis do ambiente do processo. `APP_ENV` é obrigatório e aceita `development`, `test`, `staging` ou `production`; ausência ou valor desconhecido impede a inicialização. Use `.env.example` como referência local e disponibilize os valores ao processo pelo ambiente de desenvolvimento; a aplicação não interpreta arquivos `.env` diretamente.
 
 ## Banco de dados e migrations
 
@@ -74,11 +74,14 @@ Os testes de persistência usam SQLite em memória e não exigem servidor Postgr
 
 A API oferece cadastro, login, renovação, logout e consulta do usuário autenticado em `/auth`. Senhas são armazenadas com Argon2id; access tokens JWT e refresh tokens não são retornados no corpo JSON. O access token e o refresh token são enviados em cookies `HttpOnly`; o cookie CSRF é acompanhado pelo cabeçalho `X-CSRF-Token` nas operações protegidas. Em produção, cookies `Secure` são obrigatórios. O refresh token é rotacionado e apenas seu hash é persistido.
 
-Defina `JWT_SECRET_KEY` no ambiente do processo. Para desenvolvimento local, gere uma chave com:
+Defina `APP_ENV=development` e `JWT_SECRET_KEY` no ambiente do processo. A chave deve ser Base64 URL-safe canônica de pelo menos 32 bytes gerados por um CSPRNG. Para desenvolvimento local, gere 48 bytes aleatórios com:
 
 ```powershell
+$env:APP_ENV = "development"
 $env:JWT_SECRET_KEY = python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
+
+A validação confere o formato, o tamanho decodificado e padrões previsíveis simples, mas não consegue provar a entropia da chave. Gere-a com um gerador criptográfico e armazene-a somente em variável de ambiente ou gerenciador de segredos. A aplicação não cria uma chave padrão.
 
 Em HTTP local, mantenha a chave apenas no ambiente do terminal e use `AUTH_COOKIE_SECURE=false`; em produção mantenha `AUTH_COOKIE_SECURE=true`. `AUTH_COOKIE_SAMESITE` aceita `lax`, `strict` ou `none`; o último exige cookies `Secure`. `JWT_ISSUER`, `JWT_AUDIENCE`, `ACCESS_TOKEN_TTL_MINUTES` e `REFRESH_TOKEN_TTL_DAYS` também podem ser ajustados pelo ambiente. O arquivo `.env.example` documenta os nomes, mas a aplicação não lê arquivos `.env` diretamente.
 
@@ -110,11 +113,21 @@ Execute os testes unitários com `python -m pytest`. Pytest é uma dependência 
 
 Use Conventional Commits nas próximas alterações, por exemplo, `feat: adicionar gerador de rascunhos` ou `docs: documentar configuração local`. Não faça commit ou push sem autorização explícita.
 
-`APP_ENV` aceita `development`, `test`, `staging` ou `production`; valores desconhecidos impedem a inicialização. Defina explicitamente `APP_ENV=production` na implantação. Em produção, configure também `AUTH_COOKIE_SECURE=true`, `JWT_SECRET_KEY` e `DATABASE_URL`; a aplicação recusa iniciar sem esses requisitos.
+Em produção, configure explicitamente `APP_ENV=production`, `AUTH_COOKIE_SECURE=true`, `JWT_SECRET_KEY` como Base64 URL-safe canônica de ao menos 32 bytes aleatórios e `DATABASE_URL` com PostgreSQL (`postgresql+psycopg://...`). Gere o segredo com CSPRNG (por exemplo, `secrets.token_urlsafe(48)`) e armazene-o em variável de ambiente ou gerenciador de segredos. A validação recusa formatos inválidos e padrões previsíveis conhecidos, mas não consegue provar a aleatoriedade ou entropia de um valor arbitrário. Não use credenciais no código nem em arquivos versionados.
 
 Cadastro e login têm limites independentes por endereço IP e por conta: login permite até 30 tentativas por IP e 10 por e-mail a cada 15 minutos; cadastro permite até 20 por IP e 5 por e-mail a cada hora. A resposta `429` é genérica e inclui `Retry-After`. O IP vem do peer da conexão ASGI; cabeçalhos encaminhados fornecidos pelo cliente não são usados diretamente. Se houver proxy reverso, configure no servidor ASGI somente os endereços de proxy confiáveis.
 
-O armazenamento atual dos limites é em memória local ao processo e serve para desenvolvimento ou execução de instância única. Ele não compartilha contadores entre múltiplos processos ou instâncias e, portanto, não oferece proteção suficiente em produção distribuída. A interface `RateLimitStore` permite substituir esse armazenamento por uma implementação compartilhada, como Redis, em uma etapa futura; nenhum serviço externo é necessário agora.
+O armazenamento em memória dos limites é aceito somente em desenvolvimento, testes e execução de instância única. Ele não compartilha contadores entre processos ou instâncias e não é proteção produtiva adequada. **A inicialização em produção está bloqueada:** não existe adaptador de armazenamento compartilhado concreto e validado neste projeto. Declarar `is_shared = True` ou implementar um método com a assinatura esperada não comprova compartilhamento, atomicidade, expiração ou persistência. A produção só poderá ser habilitada após implementar e validar um backend real que cumpra essas propriedades e falhe fechada. Não há adaptador Redis nem serviço externo nesta etapa.
+
+Use `create_app` para construir a aplicação do projeto ou o ponto de entrada oficial `app.main:app`, que valida as configurações no fluxo de inicialização. Instanciar `SafeFastAPI` diretamente cria apenas um app ASGI vazio, sem as rotas e dependências do projeto, e não é um caminho de inicialização suportado.
+
+## Concorrência e migrations
+
+Critérios e perfis usam controle otimista de versão. Se duas gravações partirem da mesma versão, somente uma é aceita; a outra recebe HTTP `409` e deve recarregar os dados antes de tentar novamente. Corridas de criação protegidas pelas constraints também retornam conflito. SQLite permite testar a detecção de versão obsoleta, mas não reproduz os bloqueios e a concorrência de escrita do PostgreSQL; a validação final em PostgreSQL ainda depende de uma instância de teste.
+
+Antes de aplicar migrations em produção, faça e valide um backup recuperável. O downgrade da migration de autenticação remove e-mails, hashes de senha, flags de conta e tabelas de sessões/refresh tokens; isso destrói dados de autenticação. Execute downgrade somente com plano de recuperação aprovado e backup verificado. As migrations já aplicadas não devem ser editadas; a correção de concorrência foi adicionada em uma migration nova e aditiva.
+
+Falhas internas são respondidas com mensagem genérica e identificador de correlação. O wrapper ASGI impede que exceções HTTP já respondidas sejam relançadas ao servidor, evitando que o Uvicorn grave seus tracebacks. Os logs da aplicação registram somente o identificador e o tipo da falha, nunca corpos, senhas, tokens, cookies ou mensagens/tracebacks de exceções de banco. Cancelamentos e erros de inicialização do lifespan continuam sendo propagados.
 
 ## Execução na nuvem
 

@@ -3,12 +3,14 @@
 from contextlib import asynccontextmanager
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.types import Message, Receive, Scope, Send
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.personal_data import router as personal_data_router
@@ -22,6 +24,61 @@ from app.security.rate_limiting import (
 from config.settings import Settings, SettingsError
 
 
+_logger = logging.getLogger(__name__)
+
+
+class SafeFastAPI(FastAPI):
+    """Impede que exceções já convertidas em HTTP 500 cheguem ao servidor ASGI."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await super().__call__(scope, receive, send)
+            return
+
+        response_started = False
+        send_failed = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started, send_failed
+            if message["type"] == "http.response.start":
+                response_started = True
+            try:
+                await send(message)
+            except Exception:
+                send_failed = True
+                raise
+
+        try:
+            await super().__call__(scope, receive, tracked_send)
+        except Exception as error:
+            if send_failed:
+                error_id = secrets.token_hex(8)
+                _logger.error(
+                    "Falha de transporte ASGI (id=%s, tipo=%s).",
+                    error_id,
+                    type(error).__name__,
+                )
+                return
+            if response_started:
+                # O handler interno já registrou um identificador sem a exceção.
+                return
+
+            error_id = secrets.token_hex(8)
+            _logger.error(
+                "Falha ASGI antes da resposta (id=%s, tipo=%s).",
+                error_id,
+                type(error).__name__,
+            )
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "Não foi possível processar a requisição.",
+                    "request_id": error_id,
+                },
+            )
+            await response(scope, receive, send)
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -33,8 +90,11 @@ def create_app(
     app_settings.validate_environment()
     if app_settings.app_env.casefold() == "production":
         app_settings.validate_authentication()
-        if not app_settings.database_url:
-            raise SettingsError("DATABASE_URL deve ser configurada em produção.")
+    app_settings.validate_database(production=app_settings.app_env.casefold() == "production")
+    if app_settings.app_env.casefold() == "production":
+        raise SettingsError(
+            "Produção está bloqueada até existir um armazenamento compartilhado de rate limiting concreto e validado."
+        )
 
     fingerprint_source = (
         app_settings.jwt_secret_key.encode("utf-8")
@@ -63,13 +123,14 @@ def create_app(
             if engine is not None:
                 engine.dispose()
 
-    application = FastAPI(
+    application = SafeFastAPI(
         title="LinkedIn AI Agent",
         description="API de autenticação e gerenciamento de usuários.",
         lifespan=lifespan,
     )
     application.state.settings = app_settings
     application.state.auth_rate_limiter = auth_rate_limiter
+    application.state.rate_limit_store = auth_rate_limiter.store
     application.include_router(auth_router)
     application.include_router(personal_data_router)
 
@@ -83,7 +144,36 @@ def create_app(
             content={"detail": "Os dados da requisição são inválidos."},
         )
 
+    @application.exception_handler(Exception)
+    async def sanitized_internal_error(_request: Request, error: Exception) -> JSONResponse:
+        # A exceção pode carregar SQL, parâmetros ou dados enviados pelo usuário.
+        # O identificador correlaciona o log e a resposta sem expor a exceção.
+        error_id = secrets.token_hex(8)
+        _logger.error("Falha interna da API (id=%s, tipo=%s).", error_id, type(error).__name__)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Não foi possível processar a requisição.",
+                "request_id": error_id,
+            },
+        )
+
     return application
 
 
-app = create_app()
+def _create_asgi_entrypoint() -> FastAPI:
+    """Mantém importável o módulo, mas falha no startup sem configuração explícita."""
+    try:
+        return create_app()
+    except SettingsError as configuration_error:
+        startup_error = configuration_error
+
+        @asynccontextmanager
+        async def reject_startup(_application: FastAPI) -> AsyncIterator[None]:
+            raise RuntimeError("Configuração obrigatória ausente ou insegura.") from startup_error
+            yield
+
+        return SafeFastAPI(lifespan=reject_startup)
+
+
+app = _create_asgi_entrypoint()

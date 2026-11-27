@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.db.models import (
     CourseCertificationORM,
@@ -39,6 +40,8 @@ class ProfessionalProfileRepository:
         row = session.scalar(
             select(ProfessionalProfileORM).where(ProfessionalProfileORM.user_id == user_id)
         )
+        versions = session.info.setdefault("personal_data_versions", {})
+        versions[(ProfessionalProfileORM, user_id)] = row.version if row else None
         return self._to_domain(row) if row else None
 
     def save(
@@ -50,9 +53,20 @@ class ProfessionalProfileRepository:
         row = session.scalar(
             select(ProfessionalProfileORM).where(ProfessionalProfileORM.user_id == user_id)
         )
+        versions = session.info.get("personal_data_versions", {})
+        version_key = (ProfessionalProfileORM, user_id)
+        if version_key in versions:
+            expected_version = versions.pop(version_key)
+            if (row is None) != (expected_version is None) or (
+                row is not None and row.version != expected_version
+            ):
+                raise StaleDataError("O perfil foi alterado durante a requisição.")
         if row is None:
             row = ProfessionalProfileORM(user_id=user_id)
             session.add(row)
+        else:
+            # Força uma escrita versionada mesmo quando só os registros filhos mudaram.
+            row.version += 1
 
         row.name = profile.name
         row.professional_summary = profile.professional_summary

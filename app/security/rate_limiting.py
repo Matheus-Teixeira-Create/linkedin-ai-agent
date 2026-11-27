@@ -21,12 +21,21 @@ class RateLimitRule:
     window_seconds: int
 
     def __post_init__(self) -> None:
-        if not self.key or self.maximum < 1 or self.window_seconds < 1:
+        if not self.key or len(self.key) > 512 or self.maximum < 1 or self.window_seconds < 1:
             raise ValueError("A regra de rate limiting deve ter chave e limites positivos.")
 
 
+class RateLimitStoreError(RuntimeError):
+    """Indica indisponibilidade ou esgotamento seguro do armazenamento de limites."""
+
+
 class RateLimitStore(Protocol):
-    """Contrato para armazenamentos locais ou compartilhados de limites."""
+    """Contrato atômico para limites locais ou compartilhados.
+
+    Implementações compartilhadas devem verificar todas as regras e registrar
+    os eventos atomicamente, com expiração no backend. Falhas devem gerar
+    ``RateLimitStoreError`` para que as rotas falhem de forma fechada.
+    """
 
     def check_and_record(self, rules: Sequence[RateLimitRule]) -> int | None:
         """Retorna segundos para retry, ou ``None`` quando as regras permitem."""
@@ -35,8 +44,11 @@ class RateLimitStore(Protocol):
 class InMemoryRateLimitStore:
     """Armazenamento de processo único; não serve para produção distribuída."""
 
-    def __init__(self, clock=time.monotonic) -> None:
+    def __init__(self, clock=time.monotonic, *, max_buckets: int = 100_000) -> None:
+        if max_buckets < 1:
+            raise ValueError("max_buckets deve ser positivo.")
         self._clock = clock
+        self._max_buckets = max_buckets
         self._events: dict[str, deque[float]] = {}
         self._windows: dict[str, int] = {}
         self._lock = Lock()
@@ -52,7 +64,13 @@ class InMemoryRateLimitStore:
             waits: list[int] = []
             active: list[tuple[RateLimitRule, deque[float]]] = []
             for rule in rules:
-                events = self._events.setdefault(rule.key, deque())
+                events = self._events.get(rule.key)
+                if events is None:
+                    if len(self._events) >= self._max_buckets:
+                        self._remove_expired_buckets(now)
+                    if len(self._events) >= self._max_buckets:
+                        raise RateLimitStoreError("Capacidade do armazenamento local esgotada.")
+                    events = self._events.setdefault(rule.key, deque())
                 self._windows[rule.key] = max(
                     rule.window_seconds, self._windows.get(rule.key, 0)
                 )
@@ -119,9 +137,12 @@ class AuthenticationRateLimiter:
         else:
             raise ValueError("Operação de autenticação sem limite configurado.")
 
+        # Reutiliza a mesma normalização aplicada pelo serviço de autenticação,
+        # impedindo variações de caixa e espaços de criar chaves distintas.
+        normalized_email = email.strip().casefold()
         account_digest = hmac.new(
             self._fingerprint_key,
-            email.strip().casefold().encode("utf-8"),
+            normalized_email.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
         prefix = f"auth:{action}"

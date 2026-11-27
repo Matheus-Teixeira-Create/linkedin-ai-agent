@@ -1,6 +1,7 @@
 """Testes unitários para senhas, configurações e JWTs."""
 
 from datetime import UTC, datetime, timedelta
+import secrets
 from uuid import uuid4
 
 import pytest
@@ -23,7 +24,7 @@ def test_passwords_use_salted_argon2id_hashes() -> None:
 
 
 def test_jwt_has_required_identity_claims_and_decodes_with_fixed_algorithm() -> None:
-    manager = AccessTokenManager(Settings(jwt_secret_key="s" * 48))
+    manager = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secrets.token_urlsafe(48)))
     user_id, session_id = uuid4(), uuid4()
     issued = manager.issue(user_id, session_id)
 
@@ -33,8 +34,8 @@ def test_jwt_has_required_identity_claims_and_decodes_with_fixed_algorithm() -> 
 
 
 def test_expired_tampered_wrong_issuer_and_wrong_audience_tokens_are_rejected() -> None:
-    secret = "s" * 48
-    settings = Settings(jwt_secret_key=secret)
+    secret = secrets.token_urlsafe(48)
+    settings = Settings(app_env="test", jwt_secret_key=secret)
     manager = AccessTokenManager(settings)
     now = datetime.now(UTC)
     user_id, session_id = uuid4(), uuid4()
@@ -48,26 +49,27 @@ def test_expired_tampered_wrong_issuer_and_wrong_audience_tokens_are_rejected() 
     with pytest.raises(InvalidAccessToken):
         manager.decode(altered)
 
-    other_issuer = AccessTokenManager(Settings(jwt_secret_key=secret, jwt_issuer="outro-emissor"))
+    other_issuer = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secret, jwt_issuer="outro-emissor"))
     with pytest.raises(InvalidAccessToken):
         manager.decode(other_issuer.issue(user_id, session_id).value)
 
-    other_audience = AccessTokenManager(Settings(jwt_secret_key=secret, jwt_audience="outro-cliente"))
+    other_audience = AccessTokenManager(Settings(app_env="test", jwt_secret_key=secret, jwt_audience="outro-cliente"))
     with pytest.raises(InvalidAccessToken):
         manager.decode(other_audience.issue(user_id, session_id).value)
 
 
 def test_authentication_secret_is_required_and_hidden_from_repr() -> None:
-    settings = Settings.from_env({"JWT_SECRET_KEY": "segredo-de-teste-que-nao-deve-aparecer-123"})
-    assert "segredo-de-teste" not in repr(settings)
+    secret = secrets.token_urlsafe(48)
+    settings = Settings.from_env({"APP_ENV": "test", "JWT_SECRET_KEY": secret})
+    assert secret not in repr(settings)
     settings.validate_authentication()
 
     with pytest.raises(SettingsError, match="JWT_SECRET_KEY"):
-        AccessTokenManager(Settings())
+        AccessTokenManager(Settings(app_env="test"))
     with pytest.raises(SettingsError, match="produção"):
         Settings(
             app_env="production",
-            jwt_secret_key="s" * 48,
+            jwt_secret_key=secrets.token_urlsafe(48),
             auth_cookie_secure=False,
         ).validate_authentication()
 
@@ -77,6 +79,6 @@ def test_cookie_settings_validate_same_site_and_positive_token_lifetimes() -> No
         {"APP_ENV": "production", "AUTH_COOKIE_SECURE": "true"}
     ).auth_cookie_secure is True
     with pytest.raises(SettingsError, match="SameSite 'none'"):
-        Settings.from_env({"AUTH_COOKIE_SAMESITE": "none", "JWT_SECRET_KEY": "s" * 48}).validate_authentication()
+        Settings.from_env({"APP_ENV": "test", "AUTH_COOKIE_SAMESITE": "none", "JWT_SECRET_KEY": secrets.token_urlsafe(48)}).validate_authentication()
     with pytest.raises(SettingsError, match="ACCESS_TOKEN_TTL_MINUTES"):
-        Settings.from_env({"ACCESS_TOKEN_TTL_MINUTES": "0"})
+        Settings.from_env({"APP_ENV": "test", "ACCESS_TOKEN_TTL_MINUTES": "0"})

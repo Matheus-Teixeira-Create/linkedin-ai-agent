@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
     true,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -103,6 +104,7 @@ class SearchCriteriaORM(Base):
     __table_args__ = (UniqueConstraint("user_id", name="uq_search_criteria_user"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    version: Mapped[int] = mapped_column(nullable=False, default=1, server_default=text("1"))
     user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -121,6 +123,8 @@ class SearchCriteriaORM(Base):
         passive_deletes=True,
         order_by="SearchCriteriaSkillORM.position",
     )
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class SearchCriteriaSkillORM(Base):
@@ -146,6 +150,7 @@ class ProfessionalProfileORM(Base):
     __table_args__ = (UniqueConstraint("user_id", name="uq_professional_profile_user"),)
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    version: Mapped[int] = mapped_column(nullable=False, default=1, server_default=text("1"))
     user_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -182,6 +187,8 @@ class ProfessionalProfileORM(Base):
         back_populates="profile", cascade="all, delete-orphan", passive_deletes=True,
         order_by="ProfessionalLinkORM.position",
     )
+
+    __mapper_args__ = {"version_id_col": version}
 
 
 class ProfessionalSkillORM(Base):
